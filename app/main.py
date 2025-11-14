@@ -5,7 +5,7 @@ app = FastAPI()
 
 @app.get("/")
 def read_root():
-    return {"message": "Hello from Sudarshan on GCP VM!"}
+    return {"message": "Hello from Sudarshan from GCP VM!"}
 
 
 @app.get("/health")
