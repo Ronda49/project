@@ -1,0 +1,113 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    # -----------------------------------------------------
+    # 1. CHECKOUT CODE
+    # -----------------------------------------------------
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # -----------------------------------------------------
+    # 2. PYTHON LINTING
+    # -----------------------------------------------------
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install linting dependencies
+      run: |
+        pip install flake8
+
+    - name: Run flake8 linting
+      run: |
+        mkdir -p reports
+        flake8 . --format=html --htmldir=reports/flake8-report || true
+
+    # -----------------------------------------------------
+    # 3. TRIVY FILESYSTEM SCAN (source code security)
+    # -----------------------------------------------------
+    - name: Run Trivy filesystem scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        format: 'sarif'
+        output: 'reports/trivy-fs.sarif'
+        exit-code: '0'
+
+    # -----------------------------------------------------
+    # 4. GOOGLE CLOUD AUTHENTICATION
+    # -----------------------------------------------------
+    - name: Setup gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: sudharshan-477403
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Configure Docker auth for Artifact Registry
+      run: |
+        gcloud auth configure-docker us-central1-docker.pkg.dev
+
+    # -----------------------------------------------------
+    # 5. BUILD DOCKER IMAGE
+    # -----------------------------------------------------
+    - name: Build Docker image
+      run: |
+        docker build -t us-central1-docker.pkg.dev/sudharshan-477403/my-repo/my-backend:latest .
+
+    # -----------------------------------------------------
+    # 6. TRIVY DOCKER IMAGE SCAN
+    # -----------------------------------------------------
+    - name: Trivy Docker image scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'us-central1-docker.pkg.dev/sudharshan-477403/my-repo/my-backend:latest'
+        format: 'sarif'
+        output: 'reports/trivy-image.sarif'
+        exit-code: '0'
+
+    # -----------------------------------------------------
+    # 7. UPLOAD REPORTS AS ARTIFACTS
+    # -----------------------------------------------------
+    - name: Upload scan reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-and-lint-reports
+        path: reports/
+
+    # -----------------------------------------------------
+    # 8. PUSH DOCKER IMAGE TO ARTIFACT REGISTRY
+    # -----------------------------------------------------
+    - name: Push Docker Image
+      run: |
+        docker push us-central1-docker.pkg.dev/sudharshan-477403/my-repo/my-backend:latest
+
+    # -----------------------------------------------------
+    # 9. SSH & DEPLOY TO GCP VM
+    # -----------------------------------------------------
+    - name: Deploy to VM
+      run: |
+        gcloud compute ssh my-vm \
+          --zone=us-central1-a \
+          --command "
+            sudo docker stop my-backend || true
+            sudo docker rm my-backend || true
+
+            sudo docker pull us-central1-docker.pkg.dev/sudharshan-477403/my-repo/my-backend:latest
+
+            sudo docker run -d \
+              --restart unless-stopped \
+              --name my-backend \
+              -p 8080:8080 \
+              us-central1-docker.pkg.dev/sudharshan-477403/my-repo/my-backend:latest
+          "
